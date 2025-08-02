@@ -13,7 +13,9 @@ import {
   MoreVertical,
   Tag,
   Share2,
-  Copy
+  Copy,
+  CheckCircle,
+  XCircle
 } from 'lucide-react';
 
 interface Ticket {
@@ -41,6 +43,7 @@ interface Ticket {
     color: string;
   };
   comments: Comment[];
+  userVote?: 'UP' | 'DOWN' | null;
 }
 
 interface Comment {
@@ -64,6 +67,8 @@ const TicketDetail: React.FC = () => {
   const [newComment, setNewComment] = useState('');
   const [submittingComment, setSubmittingComment] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [votingState, setVotingState] = useState(false);
+  const [closingTicket, setClosingTicket] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -74,7 +79,18 @@ const TicketDetail: React.FC = () => {
   const fetchTicket = async () => {
     try {
       const response = await axios.get(`/tickets/${id}`);
-      setTicket(response.data);
+      
+      // Fetch user's vote for this ticket
+      const ticketData = response.data;
+      try {
+        const voteResponse = await axios.get(`/tickets/${id}/user-vote`);
+        ticketData.userVote = voteResponse.data.userVote;
+      } catch (error) {
+        // No vote or error fetching vote
+        ticketData.userVote = null;
+      }
+      
+      setTicket(ticketData);
     } catch (error) {
       console.error('Failed to fetch ticket:', error);
       navigate('/dashboard');
@@ -107,14 +123,37 @@ const TicketDetail: React.FC = () => {
   };
 
   const handleVote = async (type: 'UP' | 'DOWN') => {
+    if (votingState) return;
+
+    setVotingState(true);
     try {
       const response = await axios.post(`/tickets/${id}/vote`, { type });
       setTicket(prev => prev ? {
         ...prev,
-        votes: response.data.votes
+        votes: response.data.votes,
+        userVote: prev.userVote === type ? null : type
       } : null);
     } catch (error) {
       console.error('Failed to vote:', error);
+    } finally {
+      setVotingState(false);
+    }
+  };
+
+  const handleCloseTicket = async () => {
+    if (closingTicket) return;
+
+    setClosingTicket(true);
+    try {
+      await axios.put(`/tickets/${id}/status`, { status: 'CLOSED' });
+      setTicket(prev => prev ? {
+        ...prev,
+        status: 'CLOSED'
+      } : null);
+    } catch (error) {
+      console.error('Failed to close ticket:', error);
+    } finally {
+      setClosingTicket(false);
     }
   };
 
@@ -156,6 +195,13 @@ const TicketDetail: React.FC = () => {
       hour: '2-digit',
       minute: '2-digit'
     });
+  };
+
+  const canCloseTicket = () => {
+    return ticket && 
+           user?.id === ticket.creator.id && 
+           ticket.comments.length > 0 && 
+           (ticket.status === 'OPEN' || ticket.status === 'IN_PROGRESS' || ticket.status === 'RESOLVED');
   };
 
   if (loading) {
@@ -200,7 +246,7 @@ const TicketDetail: React.FC = () => {
               {ticket.title}
             </h1>
             
-            <div className="flex items-center space-x-4 text-sm text-gray-600">
+            <div className="flex items-center space-x-4 text-sm text-gray-600 mb-4">
               <div className="flex items-center space-x-1">
                 <User className="h-4 w-4" />
                 <span>Created by {ticket.creator.name}</span>
@@ -227,6 +273,23 @@ const TicketDetail: React.FC = () => {
                 {ticket.priority} Priority
               </span>
             </div>
+
+            {/* Owner Actions - Close Ticket */}
+            {canCloseTicket() && (
+              <div className="mb-4">
+                <button
+                  onClick={handleCloseTicket}
+                  disabled={closingTicket}
+                  className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white hover:bg-green-700 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <CheckCircle className="h-4 w-4" />
+                  <span>{closingTicket ? 'Closing...' : 'Mark as Resolved & Close'}</span>
+                </button>
+                <p className="text-sm text-gray-600 mt-1">
+                  Close this ticket if you're satisfied with the responses
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center space-x-4 ml-6">
@@ -240,21 +303,32 @@ const TicketDetail: React.FC = () => {
             </button>
 
             {/* Vote Section */}
-            <div className="flex flex-col items-center">
+            <div className="flex flex-col items-center bg-gray-50 rounded-lg p-2">
               <button
                 onClick={() => handleVote('UP')}
-                className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                disabled={votingState}
+                className={`p-2 hover:bg-gray-200 rounded-full transition-colors ${
+                  ticket.userVote === 'UP' ? 'text-green-600 bg-green-100' : 'text-gray-600'
+                } ${votingState ? 'opacity-50 cursor-not-allowed' : ''}`}
+                title="Upvote this ticket"
               >
-                <ArrowUp className="h-5 w-5 text-gray-600" />
+                <ArrowUp className="h-5 w-5" />
               </button>
-              <span className="text-lg font-bold text-gray-900 my-1">
+              <span className={`text-lg font-bold my-1 ${
+                ticket.votes > 0 ? 'text-green-600' : 
+                ticket.votes < 0 ? 'text-red-600' : 'text-gray-900'
+              }`}>
                 {ticket.votes}
               </span>
               <button
                 onClick={() => handleVote('DOWN')}
-                className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                disabled={votingState}
+                className={`p-2 hover:bg-gray-200 rounded-full transition-colors ${
+                  ticket.userVote === 'DOWN' ? 'text-red-600 bg-red-100' : 'text-gray-600'
+                } ${votingState ? 'opacity-50 cursor-not-allowed' : ''}`}
+                title="Downvote this ticket"
               >
-                <ArrowDown className="h-5 w-5 text-gray-600" />
+                <ArrowDown className="h-5 w-5" />
               </button>
             </div>
           </div>
@@ -320,7 +394,7 @@ const TicketDetail: React.FC = () => {
             </div>
 
             {/* Add Comment Form - Only for Support Agents and Admins */}
-            {(user?.role === 'SUPPORT_AGENT' || user?.role === 'ADMIN') && (
+            {(user?.role === 'SUPPORT_AGENT' || user?.role === 'ADMIN') && ticket.status !== 'CLOSED' && (
               <form onSubmit={handleAddComment} className="border-t pt-6">
                 <div className="flex space-x-4">
                   <div className="flex-shrink-0">
@@ -359,6 +433,18 @@ const TicketDetail: React.FC = () => {
                   <MessageSquare className="mx-auto h-8 w-8 text-blue-500 mb-2" />
                   <p className="text-sm text-blue-700">
                     Only support agents can reply to tickets. Your ticket has been submitted and will be reviewed soon.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Closed ticket message */}
+            {ticket.status === 'CLOSED' && (
+              <div className="border-t pt-6">
+                <div className="bg-gray-50 rounded-lg p-4 text-center">
+                  <XCircle className="mx-auto h-8 w-8 text-gray-500 mb-2" />
+                  <p className="text-sm text-gray-600">
+                    This ticket has been closed and is no longer accepting new comments.
                   </p>
                 </div>
               </div>
@@ -420,6 +506,16 @@ const TicketDetail: React.FC = () => {
               <div>
                 <dt className="text-sm font-medium text-gray-500">Last updated</dt>
                 <dd className="mt-1 text-sm text-gray-900">{formatDate(ticket.updatedAt)}</dd>
+              </div>
+
+              <div>
+                <dt className="text-sm font-medium text-gray-500">Votes</dt>
+                <dd className={`mt-1 text-sm font-medium ${
+                  ticket.votes > 0 ? 'text-green-600' : 
+                  ticket.votes < 0 ? 'text-red-600' : 'text-gray-900'
+                }`}>
+                  {ticket.votes > 0 ? '+' : ''}{ticket.votes}
+                </dd>
               </div>
             </dl>
           </div>

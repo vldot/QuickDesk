@@ -11,7 +11,9 @@ import {
   User,
   MessageSquare,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  CheckCircle,
+  XCircle
 } from 'lucide-react';
 
 interface Ticket {
@@ -41,6 +43,7 @@ interface Ticket {
   _count: {
     comments: number;
   };
+  userVote?: 'UP' | 'DOWN' | null;
 }
 
 interface Category {
@@ -60,6 +63,7 @@ const Dashboard: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [votingStates, setVotingStates] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     fetchTickets();
@@ -91,6 +95,49 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  const handleVote = async (ticketId: string, type: 'UP' | 'DOWN', event: React.MouseEvent) => {
+    event.preventDefault(); // Prevent navigation when clicking vote buttons
+    event.stopPropagation();
+
+    if (votingStates[ticketId]) return; // Prevent double voting
+
+    setVotingStates(prev => ({ ...prev, [ticketId]: true }));
+
+    try {
+      const response = await axios.post(`/tickets/${ticketId}/vote`, { type });
+      
+      // Update the ticket in the list with new vote count
+      setTickets(prev => prev.map(ticket => 
+        ticket.id === ticketId 
+          ? { ...ticket, votes: response.data.votes, userVote: type }
+          : ticket
+      ));
+    } catch (error) {
+      console.error('Failed to vote:', error);
+    } finally {
+      setVotingStates(prev => ({ ...prev, [ticketId]: false }));
+    }
+  };
+
+  const handleStatusChange = async (ticketId: string, newStatus: 'RESOLVED' | 'CLOSED', event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    try {
+      // This would require a new API endpoint for status updates
+      await axios.put(`/tickets/${ticketId}/status`, { status: newStatus });
+      
+      // Update the ticket in the list
+      setTickets(prev => prev.map(ticket => 
+        ticket.id === ticketId 
+          ? { ...ticket, status: newStatus }
+          : ticket
+      ));
+    } catch (error) {
+      console.error('Failed to update status:', error);
+    }
+  };
+
   const getStatusBadge = (status: string) => {
     const styles = {
       OPEN: 'badge-open',
@@ -118,6 +165,13 @@ const Dashboard: React.FC = () => {
       hour: '2-digit',
       minute: '2-digit'
     });
+  };
+
+  const canChangeStatus = (ticket: Ticket) => {
+    // Owner can close their own tickets if there are comments (responses)
+    return user?.id === ticket.creator.id && 
+           ticket._count.comments > 0 && 
+           (ticket.status === 'OPEN' || ticket.status === 'IN_PROGRESS' || ticket.status === 'RESOLVED');
   };
 
   if (loading) {
@@ -322,15 +376,50 @@ const Dashboard: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center space-x-2 ml-4">
+                  <div className="flex items-center space-x-3 ml-4">
+                    {/* Owner Actions - Close Ticket */}
+                    {canChangeStatus(ticket) && (
+                      <div className="flex items-center space-x-1">
+                        <button
+                          onClick={(e) => handleStatusChange(ticket.id, 'CLOSED', e)}
+                          className="flex items-center space-x-1 px-2 py-1 text-xs font-medium text-green-700 bg-green-100 hover:bg-green-200 rounded-md transition-colors"
+                          title="Mark as resolved and close"
+                        >
+                          <CheckCircle className="h-3 w-3" />
+                          <span>Close</span>
+                        </button>
+                      </div>
+                    )}
+
                     {/* Vote buttons */}
-                    <div className="flex flex-col items-center">
-                      <button className="p-1 hover:bg-gray-100 rounded">
-                        <ArrowUp className="h-4 w-4 text-gray-400" />
+                    <div className="flex flex-col items-center bg-gray-50 rounded-lg p-1">
+                      <button 
+                        onClick={(e) => handleVote(ticket.id, 'UP', e)}
+                        disabled={votingStates[ticket.id]}
+                        className={`p-1 hover:bg-gray-200 rounded transition-colors ${
+                          ticket.userVote === 'UP' ? 'text-green-600 bg-green-100' : 'text-gray-400'
+                        } ${votingStates[ticket.id] ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        title="Upvote this ticket"
+                      >
+                        <ArrowUp className="h-4 w-4" />
                       </button>
-                      <span className="text-sm font-medium text-gray-600">{ticket.votes}</span>
-                      <button className="p-1 hover:bg-gray-100 rounded">
-                        <ArrowDown className="h-4 w-4 text-gray-400" />
+                      
+                      <span className={`text-sm font-medium px-1 ${
+                        ticket.votes > 0 ? 'text-green-600' : 
+                        ticket.votes < 0 ? 'text-red-600' : 'text-gray-600'
+                      }`}>
+                        {ticket.votes}
+                      </span>
+                      
+                      <button 
+                        onClick={(e) => handleVote(ticket.id, 'DOWN', e)}
+                        disabled={votingStates[ticket.id]}
+                        className={`p-1 hover:bg-gray-200 rounded transition-colors ${
+                          ticket.userVote === 'DOWN' ? 'text-red-600 bg-red-100' : 'text-gray-400'
+                        } ${votingStates[ticket.id] ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        title="Downvote this ticket"
+                      >
+                        <ArrowDown className="h-4 w-4" />
                       </button>
                     </div>
                     

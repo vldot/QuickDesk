@@ -233,17 +233,28 @@ app.get('/api/tickets', authenticateToken, async (req, res) => {
         creator: { select: { id: true, name: true, email: true } },
         assignee: { select: { id: true, name: true, email: true } },
         category: true,
-        _count: { select: { comments: true } }
+        _count: { select: { comments: true } },
+        votesList: {
+          where: { userId: req.user.id },
+          select: { type: true }
+        }
       },
       orderBy: { [sortBy]: sortOrder },
       skip: (page - 1) * parseInt(limit),
       take: parseInt(limit)
     });
 
+    // Add user vote information to each ticket
+    const ticketsWithUserVote = tickets.map(ticket => ({
+      ...ticket,
+      userVote: ticket.votesList.length > 0 ? ticket.votesList[0].type : null,
+      votesList: undefined // Remove votesList from response
+    }));
+
     const total = await prisma.ticket.count({ where });
 
     res.json({
-      tickets,
+      tickets: ticketsWithUserVote,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -313,6 +324,65 @@ app.get('/api/tickets/:id', authenticateToken, async (req, res) => {
     res.json(ticket);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch ticket' });
+  }
+});
+
+// UPDATE TICKET STATUS ROUTE
+app.put('/api/tickets/:id/status', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    // Validate status
+    const validStatuses = ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    // Get the ticket
+    const ticket = await prisma.ticket.findUnique({
+      where: { id },
+      include: { _count: { select: { comments: true } } }
+    });
+
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+
+    // Check permissions
+    // Owner can close their own tickets if there are comments
+    // Support agents and admins can change any status
+    const canChangeStatus = 
+      req.user.role === 'ADMIN' || 
+      req.user.role === 'SUPPORT_AGENT' ||
+      (req.user.id === ticket.createdBy && 
+       status === 'CLOSED' && 
+       ticket._count.comments > 0);
+
+    if (!canChangeStatus) {
+      return res.status(403).json({ 
+        error: 'You can only close your own tickets after receiving responses' 
+      });
+    }
+
+    // Update ticket status
+    const updatedTicket = await prisma.ticket.update({
+      where: { id },
+      data: { 
+        status,
+        ...(status === 'CLOSED' ? { closedAt: new Date() } : {})
+      },
+      include: {
+        creator: { select: { id: true, name: true, email: true } },
+        assignee: { select: { id: true, name: true, email: true } },
+        category: true
+      }
+    });
+
+    res.json(updatedTicket);
+  } catch (error) {
+    console.error('Update ticket status error:', error);
+    res.status(500).json({ error: 'Failed to update ticket status' });
   }
 });
 
@@ -395,6 +465,26 @@ app.post('/api/tickets/:id/vote', authenticateToken, async (req, res) => {
     res.json({ success: true, votes: upVotes - downVotes });
   } catch (error) {
     res.status(500).json({ error: 'Failed to vote' });
+  }
+});
+
+// GET USER'S VOTE FOR A TICKET
+app.get('/api/tickets/:id/user-vote', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const vote = await prisma.vote.findUnique({
+      where: {
+        userId_ticketId: {
+          userId: req.user.id,
+          ticketId: id
+        }
+      }
+    });
+
+    res.json({ userVote: vote ? vote.type : null });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch user vote' });
   }
 });
 
