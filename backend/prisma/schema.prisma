@@ -1,0 +1,139 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  password  String
+  role      UserRole @default(END_USER)
+  avatar    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  tickets         Ticket[]    @relation("TicketCreator")
+  assignedTickets Ticket[]    @relation("TicketAssignee")
+  comments        Comment[]
+  votes           Vote[]
+  categories      Category[]
+
+  @@map("users")
+}
+
+model Category {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  color       String   @default("#3B82F6")
+  createdAt   DateTime @default(now())
+  createdBy   String
+  
+  creator User     @relation(fields: [createdBy], references: [id])
+  tickets Ticket[]
+
+  @@map("categories")
+}
+
+model Ticket {
+  id          String       @id @default(cuid())
+  title       String
+  description String
+  status      TicketStatus @default(OPEN)
+  priority    Priority     @default(MEDIUM)
+  votes       Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  closedAt    DateTime?
+
+  // Foreign Keys
+  createdBy   String
+  assignedTo  String?
+  categoryId  String
+
+  // Relations
+  creator   User       @relation("TicketCreator", fields: [createdBy], references: [id])
+  assignee  User?      @relation("TicketAssignee", fields: [assignedTo], references: [id])
+  category  Category   @relation(fields: [categoryId], references: [id])
+  comments  Comment[]
+  votesList Vote[]
+  attachments Attachment[]
+
+  @@map("tickets")
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Foreign Keys
+  ticketId String
+  userId   String
+
+  // Relations
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@map("comments")
+}
+
+model Vote {
+  id     String   @id @default(cuid())
+  type   VoteType
+  userId String
+  ticketId String
+
+  user   User   @relation(fields: [userId], references: [id])
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, ticketId])
+  @@map("votes")
+}
+
+model Attachment {
+  id        String   @id @default(cuid())
+  filename  String
+  fileUrl   String
+  fileSize  Int
+  mimeType  String
+  ticketId  String
+  uploadedAt DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@map("attachments")
+}
+
+// Enums
+enum UserRole {
+  END_USER
+  SUPPORT_AGENT
+  ADMIN
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum VoteType {
+  UP
+  DOWN
+}
