@@ -23,8 +23,29 @@ model User {
   comments        Comment[]
   votes           Vote[]
   categories      Category[]
+  roleRequests    RoleUpgradeRequest[] @relation("RequestUser")
+  processedRequests RoleUpgradeRequest[] @relation("ProcessedByUser")
 
   @@map("users")
+}
+
+model RoleUpgradeRequest {
+  id            String                    @id @default(cuid())
+  userId        String
+  requestedRole UserRole
+  currentRole   UserRole
+  status        RoleRequestStatus         @default(PENDING)
+  reason        String?
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
+  processedAt   DateTime?
+  processedBy   String?
+
+  // Relations
+  user          User                      @relation("RequestUser", fields: [userId], references: [id])
+  processedByUser User?                   @relation("ProcessedByUser", fields: [processedBy], references: [id])
+
+  @@map("role_upgrade_requests")
 }
 
 model Category {
@@ -136,4 +157,10 @@ enum Priority {
 enum VoteType {
   UP
   DOWN
+}
+
+enum RoleRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }

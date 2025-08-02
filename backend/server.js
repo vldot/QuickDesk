@@ -124,6 +124,64 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   res.json({ user: req.user });
 });
 
+// UPDATE PROFILE ROUTE
+app.put('/api/auth/profile', authenticateToken, async (req, res) => {
+  try {
+    const { name, email, currentPassword, newPassword } = req.body;
+    const userId = req.user.id;
+
+    // Validation
+    if (!name || !email) {
+      return res.status(400).json({ error: 'Name and email are required' });
+    }
+
+    // Check if email is already taken by another user
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        email,
+        NOT: { id: userId }
+      }
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ error: 'Email already taken' });
+    }
+
+    // Prepare update data
+    const updateData = { name, email };
+
+    // If user wants to change password
+    if (newPassword) {
+      if (!currentPassword) {
+        return res.status(400).json({ error: 'Current password required to change password' });
+      }
+
+      // Verify current password
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      const isValidPassword = await bcrypt.compare(currentPassword, user.password);
+      
+      if (!isValidPassword) {
+        return res.status(400).json({ error: 'Current password is incorrect' });
+      }
+
+      // Hash new password
+      updateData.password = await bcrypt.hash(newPassword, 12);
+    }
+
+    // Update user
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: updateData,
+      select: { id: true, name: true, email: true, role: true }
+    });
+
+    res.json({ user: updatedUser });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
 // CATEGORY ROUTES
 app.get('/api/categories', authenticateToken, async (req, res) => {
   try {
@@ -346,6 +404,9 @@ app.get('/api/admin/analytics', authenticateToken, requireRole(['ADMIN']), async
     const totalTickets = await prisma.ticket.count();
     const openTickets = await prisma.ticket.count({ where: { status: 'OPEN' } });
     const resolvedTickets = await prisma.ticket.count({ where: { status: 'RESOLVED' } });
+    const totalUsers = await prisma.user.count();
+    const pendingRequests = await prisma.roleUpgradeRequest.count({ where: { status: 'PENDING' } });
+    const activeAgents = await prisma.user.count({ where: { role: 'SUPPORT_AGENT' } });
     
     const ticketsByCategory = await prisma.category.findMany({
       include: { _count: { select: { tickets: true } } }
@@ -355,10 +416,161 @@ app.get('/api/admin/analytics', authenticateToken, requireRole(['ADMIN']), async
       totalTickets,
       openTickets,
       resolvedTickets,
+      totalUsers,
+      pendingRequests,
+      activeAgents,
       ticketsByCategory
     });
   } catch (error) {
+    console.error('Analytics error:', error);
     res.status(500).json({ error: 'Failed to fetch analytics' });
+  }
+});
+
+app.get('/api/admin/users', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const users = await prisma.user.findMany({
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        createdAt: true,
+        _count: { select: { tickets: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json(users);
+  } catch (error) {
+    console.error('Fetch users error:', error);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// ROLE UPGRADE REQUEST ROUTES
+app.post('/api/role-requests', authenticateToken, async (req, res) => {
+  try {
+    const { requestedRole, reason } = req.body;
+    const userId = req.user.id;
+
+    // Validation
+    if (!requestedRole || !['SUPPORT_AGENT', 'ADMIN'].includes(requestedRole)) {
+      return res.status(400).json({ error: 'Invalid requested role' });
+    }
+
+    // Check if user already has a pending request
+    const existingRequest = await prisma.roleUpgradeRequest.findFirst({
+      where: {
+        userId,
+        status: 'PENDING'
+      }
+    });
+
+    if (existingRequest) {
+      return res.status(400).json({ error: 'You already have a pending upgrade request' });
+    }
+
+    // Create request
+    const request = await prisma.roleUpgradeRequest.create({
+      data: {
+        userId,
+        requestedRole,
+        currentRole: req.user.role,
+        reason: reason || 'User requested role upgrade'
+      },
+      include: {
+        user: { select: { id: true, name: true, email: true } }
+      }
+    });
+
+    res.status(201).json(request);
+  } catch (error) {
+    console.error('Create role request error:', error);
+    res.status(500).json({ error: 'Failed to create upgrade request' });
+  }
+});
+
+app.get('/api/role-requests', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const requests = await prisma.roleUpgradeRequest.findMany({
+      include: {
+        user: { select: { id: true, name: true, email: true } },
+        processedByUser: { select: { id: true, name: true, email: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json(requests);
+  } catch (error) {
+    console.error('Fetch role requests error:', error);
+    res.status(500).json({ error: 'Failed to fetch upgrade requests' });
+  }
+});
+
+app.put('/api/role-requests/:id', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body; // 'APPROVED' or 'REJECTED'
+
+    if (!['APPROVED', 'REJECTED'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    // Get the request
+    const request = await prisma.roleUpgradeRequest.findUnique({
+      where: { id },
+      include: { user: true }
+    });
+
+    if (!request) {
+      return res.status(404).json({ error: 'Request not found' });
+    }
+
+    if (request.status !== 'PENDING') {
+      return res.status(400).json({ error: 'Request already processed' });
+    }
+
+    // Update request status
+    const updatedRequest = await prisma.roleUpgradeRequest.update({
+      where: { id },
+      data: {
+        status,
+        processedAt: new Date(),
+        processedBy: req.user.id
+      },
+      include: {
+        user: { select: { id: true, name: true, email: true } }
+      }
+    });
+
+    // If approved, update user role
+    if (status === 'APPROVED') {
+      await prisma.user.update({
+        where: { id: request.userId },
+        data: { role: request.requestedRole }
+      });
+    }
+
+    res.json(updatedRequest);
+  } catch (error) {
+    console.error('Process role request error:', error);
+    res.status(500).json({ error: 'Failed to process upgrade request' });
+  }
+});
+
+// GET USER'S ROLE REQUESTS
+app.get('/api/my-role-requests', authenticateToken, async (req, res) => {
+  try {
+    const requests = await prisma.roleUpgradeRequest.findMany({
+      where: { userId: req.user.id },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json(requests);
+  } catch (error) {
+    console.error('Fetch my role requests error:', error);
+    res.status(500).json({ error: 'Failed to fetch your requests' });
   }
 });
 
@@ -369,5 +581,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });

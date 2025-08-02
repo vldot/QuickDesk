@@ -70,6 +70,13 @@ const Profile: React.FC = () => {
     setMessage(null);
 
     try {
+      // Validation
+      if (formData.newPassword && formData.newPassword !== formData.confirmPassword) {
+        setMessage({ type: 'error', text: 'New passwords do not match' });
+        setLoading(false);
+        return;
+      }
+
       // Update user profile via API
       const updateData: any = {
         name: formData.name,
@@ -78,21 +85,11 @@ const Profile: React.FC = () => {
 
       // Only include password if user wants to change it
       if (formData.newPassword) {
-        if (formData.newPassword !== formData.confirmPassword) {
-          setMessage({ type: 'error', text: 'New passwords do not match' });
-          setLoading(false);
-          return;
-        }
         updateData.currentPassword = formData.currentPassword;
         updateData.newPassword = formData.newPassword;
       }
 
-      // In a real app, you'd call your update profile API here
-      // For demo purposes, we'll simulate success and update local storage
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Update the user context with new data
-      const updatedUser = { ...user, name: formData.name, email: formData.email };
+      const response = await axios.put('/auth/profile', updateData);
       
       setMessage({ type: 'success', text: 'Profile updated successfully!' });
       
@@ -103,47 +100,56 @@ const Profile: React.FC = () => {
         newPassword: '',
         confirmPassword: ''
       }));
-
-      // Save to localStorage for demo persistence
-      const currentToken = localStorage.getItem('token');
-      if (currentToken) {
-        localStorage.setItem('userProfile', JSON.stringify({
-          ...formData,
-          currentPassword: '',
-          newPassword: '',
-          confirmPassword: ''
-        }));
-      }
       
-    } catch (error) {
-      setMessage({ type: 'error', text: 'Failed to update profile' });
+    } catch (error: any) {
+      setMessage({ 
+        type: 'error', 
+        text: error.response?.data?.error || 'Failed to update profile' 
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  // Load saved profile data on component mount
+  const handleUpgradeRequest = async () => {
+    try {
+      await axios.post('/role-requests', {
+        requestedRole: 'SUPPORT_AGENT',
+        reason: 'I would like to help respond to support tickets and assist other users.'
+      });
+      
+      setUpgradeRequested(true);
+      setShowUpgradeRequest(false);
+      setMessage({ 
+        type: 'success', 
+        text: 'Upgrade request submitted! An admin will review your request.' 
+      });
+    } catch (error: any) {
+      setMessage({ 
+        type: 'error', 
+        text: error.response?.data?.error || 'Failed to submit upgrade request' 
+      });
+    }
+  };
+
+  // Check if user has pending requests
   useEffect(() => {
-    const savedProfile = localStorage.getItem('userProfile');
-    if (savedProfile) {
-      const profileData = JSON.parse(savedProfile);
-      setFormData(prev => ({
-        ...prev,
-        ...profileData,
-        name: user?.name || profileData.name,
-        email: user?.email || profileData.email
-      }));
+    const checkPendingRequests = async () => {
+      try {
+        const response = await axios.get('/my-role-requests');
+        const pendingRequest = response.data.find((req: any) => req.status === 'PENDING');
+        if (pendingRequest) {
+          setUpgradeRequested(true);
+        }
+      } catch (error) {
+        console.error('Failed to check pending requests:', error);
+      }
+    };
+
+    if (user?.role === 'END_USER') {
+      checkPendingRequests();
     }
   }, [user]);
-
-  const handleUpgradeRequest = () => {
-    setUpgradeRequested(true);
-    setShowUpgradeRequest(false);
-    setMessage({ 
-      type: 'success', 
-      text: 'Upgrade request submitted! An admin will review your request.' 
-    });
-  };
 
   const getRoleBadge = (role: string) => {
     const styles = {

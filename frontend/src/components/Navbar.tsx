@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import axios from 'axios';
 import { 
   Bell, 
   User, 
@@ -13,18 +14,123 @@ import {
   Shield
 } from 'lucide-react';
 
+interface NotificationItem {
+  id: string;
+  type: string;
+  message: string;
+  time: string;
+  unread: boolean;
+  url?: string;
+}
+
 const Navbar: React.FC = () => {
-  const [isOpen, setIsOpen] = useState(false);
-  const [showUserMenu, setShowUserMenu] = useState(false);
-  const [showNotifications, setShowNotifications] = useState(false);
-  const [notifications, setNotifications] = useState([
-    { id: 1, type: 'comment', message: 'New comment on ticket #123', time: '2 min ago', unread: true },
-    { id: 2, type: 'status', message: 'Ticket #456 status changed', time: '5 min ago', unread: true },
-    { id: 3, type: 'new_ticket', message: 'New ticket submitted', time: '10 min ago', unread: false },
-  ]);
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+
+  const [isOpen, setIsOpen] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  // Fetch real notifications
+  useEffect(() => {
+    if (user) {
+        fetchNotifications();
+    }
+  }, [user]);
+
+  const fetchNotifications = async () => {
+    if (!user) return;
+    
+    setLoading(true);
+    try {
+      // Create real notifications based on user role and recent activity
+      const realNotifications: NotificationItem[] = [];
+
+      if (user.role === 'ADMIN') {
+        // Fetch pending role requests
+        const roleRequestsRes = await axios.get('/role-requests');
+        const pendingRequests = roleRequestsRes.data.filter((req: any) => req.status === 'PENDING');
+        
+        pendingRequests.forEach((req: any) => {
+          realNotifications.push({
+            id: `role-${req.id}`,
+            type: 'role_request',
+            message: `${req.user.name} requested role upgrade to ${req.requestedRole.replace('_', ' ')}`,
+            time: formatTimeAgo(req.createdAt),
+            unread: true,
+            url: '/admin'
+          });
+        });
+      }
+
+      if (user.role !== 'END_USER') {
+        // Fetch recent tickets for agents/admins
+        const ticketsRes = await axios.get('/tickets?limit=5');
+        const recentTickets = ticketsRes.data.tickets.slice(0, 3);
+        
+        recentTickets.forEach((ticket: any) => {
+          realNotifications.push({
+            id: `ticket-${ticket.id}`,
+            type: 'new_ticket',
+            message: `New ticket: ${ticket.title}`,
+            time: formatTimeAgo(ticket.createdAt),
+            unread: true,
+            url: `/tickets/${ticket.id}`
+          });
+        });
+      }
+
+      // If no real notifications, add a welcome message
+      if (realNotifications.length === 0) {
+        realNotifications.push({
+          id: 'welcome',
+          type: 'info',
+          message: 'Welcome to QuickDesk! You\'ll see notifications here.',
+          time: 'Just now',
+          unread: false
+        });
+      }
+
+      setNotifications(realNotifications);
+    } catch (error) {
+      console.error('Failed to fetch notifications:', error);
+      // Fallback to welcome message
+      setNotifications([{
+        id: 'welcome',
+        type: 'info',
+        message: 'Welcome to QuickDesk!',
+        time: 'Just now',
+        unread: false
+      }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatTimeAgo = (dateString: string) => {
+    const now = new Date();
+    const date = new Date(dateString);
+    const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
+    
+    if (diffInMinutes < 1) return 'Just now';
+    if (diffInMinutes < 60) return `${diffInMinutes} min ago`;
+    if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)} hr ago`;
+    return `${Math.floor(diffInMinutes / 1440)} day ago`;
+  };
+
+  const handleNotificationClick = (notification: any) => {
+    if (notification.url) {
+      navigate(notification.url);
+    }
+    setShowNotifications(false);
+  };
+
+  const markAllAsRead = () => {
+    setNotifications(prev => prev.map(n => ({ ...n, unread: false })));
+  };
 
   const handleLogout = () => {
     logout();
@@ -92,25 +198,39 @@ const Navbar: React.FC = () => {
                     <h3 className="text-sm font-medium text-gray-900">Notifications</h3>
                   </div>
                   <div className="max-h-64 overflow-y-auto">
-                    {notifications.map(notification => (
-                      <div 
-                        key={notification.id}
-                        className={`px-4 py-3 hover:bg-gray-50 cursor-pointer ${notification.unread ? 'bg-blue-50' : ''}`}
-                      >
-                        <div className="flex items-start">
-                          <div className="flex-1">
-                            <p className="text-sm text-gray-900">{notification.message}</p>
-                            <p className="text-xs text-gray-500 mt-1">{notification.time}</p>
-                          </div>
-                          {notification.unread && (
-                            <div className="w-2 h-2 bg-blue-500 rounded-full ml-2 mt-1"></div>
-                          )}
-                        </div>
+                    {loading ? (
+                      <div className="px-4 py-8 text-center">
+                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600 mx-auto"></div>
                       </div>
-                    ))}
+                    ) : notifications.length === 0 ? (
+                      <div className="px-4 py-8 text-center text-gray-500">
+                        No notifications
+                      </div>
+                    ) : (
+                      notifications.map(notification => (
+                        <div 
+                          key={notification.id}
+                          onClick={() => handleNotificationClick(notification)}
+                          className={`px-4 py-3 hover:bg-gray-50 cursor-pointer ${notification.unread ? 'bg-blue-50' : ''}`}
+                        >
+                          <div className="flex items-start">
+                            <div className="flex-1">
+                              <p className="text-sm text-gray-900">{notification.message}</p>
+                              <p className="text-xs text-gray-500 mt-1">{notification.time}</p>
+                            </div>
+                            {notification.unread && (
+                              <div className="w-2 h-2 bg-blue-500 rounded-full ml-2 mt-1"></div>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                   <div className="px-4 py-2 border-t border-gray-200">
-                    <button className="text-sm text-primary-600 hover:text-primary-800">
+                    <button 
+                      onClick={markAllAsRead}
+                      className="text-sm text-primary-600 hover:text-primary-800"
+                    >
                       Mark all as read
                     </button>
                   </div>

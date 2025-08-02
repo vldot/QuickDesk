@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import axios from 'axios';
 import { 
   ArrowLeft, 
   Users, 
@@ -19,12 +20,21 @@ import {
 interface UpgradeRequest {
   id: string;
   userId: string;
-  userName: string;
-  userEmail: string;
+  user: {
+    id: string;
+    name: string;
+    email: string;
+  };
   currentRole: string;
   requestedRole: string;
-  requestedAt: string;
-  status: 'pending' | 'approved' | 'rejected';
+  createdAt: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  processedAt?: string;
+  processedByUser?: {
+    id: string;
+    name: string;
+    email: string;
+  };
 }
 
 interface User {
@@ -36,87 +46,139 @@ interface User {
   ticketCount: number;
 }
 
+interface ActivityItem {
+  id: string;
+  type: string;
+  message: string;
+  time: string;
+  color: string;
+  createdAt?: string;
+}
+
 const AdminPanel: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   
   const [activeTab, setActiveTab] = useState<'overview' | 'users' | 'requests' | 'categories'>('overview');
-  const [upgradeRequests, setUpgradeRequests] = useState<UpgradeRequest[]>([
-    {
-      id: '1',
-      userId: 'user1',
-      userName: 'John Doe',
-      userEmail: 'john@example.com',
-      currentRole: 'END_USER',
-      requestedRole: 'SUPPORT_AGENT',
-      requestedAt: '2025-08-02T10:30:00Z',
-      status: 'pending'
-    },
-    {
-      id: '2',
-      userId: 'user2',
-      userName: 'Jane Smith',
-      userEmail: 'jane@example.com',
-      currentRole: 'END_USER',
-      requestedRole: 'SUPPORT_AGENT',
-      requestedAt: '2025-08-01T15:20:00Z',
-      status: 'pending'
-    }
-  ]);
-
-  const [users, setUsers] = useState<User[]>([
-    {
-      id: '1',
-      name: 'Admin User',
-      email: 'admin@quickdesk.com',
-      role: 'ADMIN',
-      createdAt: '2025-08-01T00:00:00Z',
-      ticketCount: 0
-    },
-    {
-      id: '2',
-      name: 'Support Agent',
-      email: 'agent@quickdesk.com',
-      role: 'SUPPORT_AGENT',
-      createdAt: '2025-08-01T08:00:00Z',
-      ticketCount: 5
-    },
-    {
-      id: '3',
-      name: 'Test User',
-      email: 'user@quickdesk.com',
-      role: 'END_USER',
-      createdAt: '2025-08-01T12:00:00Z',
-      ticketCount: 3
-    }
-  ]);
-
+  const [loading, setLoading] = useState(true);
+  const [upgradeRequests, setUpgradeRequests] = useState<UpgradeRequest[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
+  const [recentActivity, setRecentActivity] = useState<ActivityItem[]>([]);
   const [stats, setStats] = useState({
-    totalUsers: 15,
-    totalTickets: 28,
-    openTickets: 12,
-    pendingRequests: 2,
-    activeAgents: 3
+    totalUsers: 0,
+    totalTickets: 0,
+    openTickets: 0,
+    pendingRequests: 0,
+    activeAgents: 0
   });
+  const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
-  // Redirect if not admin
   useEffect(() => {
     if (user?.role !== 'ADMIN') {
       navigate('/dashboard');
+      return;
     }
+    
+    fetchData();
   }, [user, navigate]);
 
-  const handleUpgradeRequest = async (requestId: string, action: 'approve' | 'reject') => {
-    setUpgradeRequests(prev => 
-      prev.map(req => 
-        req.id === requestId 
-          ? { ...req, status: action === 'approve' ? 'approved' : 'rejected' }
-          : req
-      )
-    );
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      // Fetch all data in parallel
+      const [analyticsRes, requestsRes, usersRes, ticketsRes] = await Promise.all([
+        axios.get('/admin/analytics'),
+        axios.get('/role-requests'),
+        axios.get('/admin/users'),
+        axios.get('/tickets?limit=5&sortBy=createdAt&sortOrder=desc')
+      ]);
 
-    // In real app, you'd call API here
-    console.log(`${action} request ${requestId}`);
+      setStats(analyticsRes.data);
+      setUpgradeRequests(requestsRes.data);
+      setUsers(usersRes.data.map((user: any) => ({
+        ...user,
+        ticketCount: user._count.tickets
+      })));
+
+      // Create recent activity from real data
+      const activity: ActivityItem[] = [];
+      
+      // Add recent tickets
+      ticketsRes.data.tickets.slice(0, 3).forEach((ticket: any) => {
+        activity.push({
+          id: `ticket-${ticket.id}`,
+          type: 'ticket',
+          message: `${ticket.creator.name} submitted a new ticket: "${ticket.title}"`,
+          time: formatTimeAgo(ticket.createdAt),
+          color: 'green'
+        });
+      });
+
+      // Add recent role requests
+      requestsRes.data.slice(0, 2).forEach((request: any) => {
+        activity.push({
+          id: `request-${request.id}`,
+          type: 'role_request',
+          message: `${request.user.name} requested role upgrade to ${request.requestedRole.replace('_', ' ')}`,
+          time: formatTimeAgo(request.createdAt),
+          color: 'blue'
+        });
+      });
+
+      // Sort by most recent
+      activity.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+      
+      setRecentActivity(activity.slice(0, 5));
+      
+    } catch (error) {
+      console.error('Failed to fetch admin data:', error);
+      setMessage({
+        type: 'error',
+        text: 'Failed to load admin data. Please try again.'
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatTimeAgo = (dateString: string) => {
+    const now = new Date();
+    const date = new Date(dateString);
+    const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
+    
+    if (diffInMinutes < 1) return 'Just now';
+    if (diffInMinutes < 60) return `${diffInMinutes} minutes ago`;
+    if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)} hours ago`;
+    return `${Math.floor(diffInMinutes / 1440)} days ago`;
+  };
+
+  const handleUpgradeRequest = async (requestId: string, action: 'approve' | 'reject') => {
+    try {
+      const status = action === 'approve' ? 'APPROVED' : 'REJECTED';
+      
+      await axios.put(`/role-requests/${requestId}`, {
+        status
+      });
+      
+      // Refresh data
+      fetchData();
+      
+      setMessage({ 
+        type: 'success', 
+        text: `Request ${action}d successfully!` 
+      });
+
+      // Clear message after 3 seconds
+      setTimeout(() => setMessage(null), 3000);
+    } catch (error: any) {
+      setMessage({ 
+        type: 'error', 
+        text: error.response?.data?.error || `Failed to ${action} request` 
+      });
+
+      // Clear message after 5 seconds
+      setTimeout(() => setMessage(null), 5000);
+    }
   };
 
   const getRoleBadge = (role: string) => {
@@ -152,6 +214,16 @@ const AdminPanel: React.FC = () => {
     return null;
   }
 
+  if (loading) {
+    return (
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="flex items-center justify-center h-64">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Header */}
@@ -168,6 +240,23 @@ const AdminPanel: React.FC = () => {
         <p className="text-gray-600 mt-1">
           Manage users, requests, and system settings
         </p>
+
+        {message && (
+          <div className={`mt-4 flex items-center gap-2 p-4 rounded-md ${
+            message.type === 'success' 
+              ? 'bg-green-50 border border-green-200' 
+              : 'bg-red-50 border border-red-200'
+          }`}>
+            {message.type === 'success' ? (
+              <CheckCircle className="h-5 w-5 text-green-500" />
+            ) : (
+              <XCircle className="h-5 w-5 text-red-500" />
+            )}
+            <span className={message.type === 'success' ? 'text-green-700' : 'text-red-700'}>
+              {message.text}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Navigation Tabs */}
@@ -190,9 +279,9 @@ const AdminPanel: React.FC = () => {
             >
               <tab.icon className="h-4 w-4" />
               <span>{tab.label}</span>
-              {tab.key === 'requests' && upgradeRequests.filter(r => r.status === 'pending').length > 0 && (
+              {tab.key === 'requests' && upgradeRequests.filter(r => r.status === 'PENDING').length > 0 && (
                 <span className="bg-red-100 text-red-800 text-xs px-2 py-1 rounded-full">
-                  {upgradeRequests.filter(r => r.status === 'pending').length}
+                  {upgradeRequests.filter(r => r.status === 'PENDING').length}
                 </span>
               )}
             </button>
@@ -211,7 +300,7 @@ const AdminPanel: React.FC = () => {
                   <Users className="h-6 w-6 text-blue-600" />
                 </div>
                 <div className="ml-4">
-                  <p className="text-sm font-medium text-gray-600">Total Users</p>
+                  <p className="text-sm text-gray-600">Total Users</p>
                   <p className="text-2xl font-bold text-gray-900">{stats.totalUsers}</p>
                 </div>
               </div>
@@ -223,7 +312,7 @@ const AdminPanel: React.FC = () => {
                   <Ticket className="h-6 w-6 text-green-600" />
                 </div>
                 <div className="ml-4">
-                  <p className="text-sm font-medium text-gray-600">Total Tickets</p>
+                  <p className="text-sm text-gray-600">Total Tickets</p>
                   <p className="text-2xl font-bold text-gray-900">{stats.totalTickets}</p>
                 </div>
               </div>
@@ -235,7 +324,7 @@ const AdminPanel: React.FC = () => {
                   <Clock className="h-6 w-6 text-yellow-600" />
                 </div>
                 <div className="ml-4">
-                  <p className="text-sm font-medium text-gray-600">Open Tickets</p>
+                  <p className="text-sm text-gray-600">Open Tickets</p>
                   <p className="text-2xl font-bold text-gray-900">{stats.openTickets}</p>
                 </div>
               </div>
@@ -247,7 +336,7 @@ const AdminPanel: React.FC = () => {
                   <UserCheck className="h-6 w-6 text-purple-600" />
                 </div>
                 <div className="ml-4">
-                  <p className="text-sm font-medium text-gray-600">Pending Requests</p>
+                  <p className="text-sm text-gray-600">Pending Requests</p>
                   <p className="text-2xl font-bold text-gray-900">{stats.pendingRequests}</p>
                 </div>
               </div>
@@ -259,7 +348,7 @@ const AdminPanel: React.FC = () => {
                   <Shield className="h-6 w-6 text-indigo-600" />
                 </div>
                 <div className="ml-4">
-                  <p className="text-sm font-medium text-gray-600">Active Agents</p>
+                  <p className="text-sm text-gray-600">Active Agents</p>
                   <p className="text-2xl font-bold text-gray-900">{stats.activeAgents}</p>
                 </div>
               </div>
@@ -270,21 +359,21 @@ const AdminPanel: React.FC = () => {
           <div className="card">
             <h3 className="text-lg font-medium text-gray-900 mb-4">Recent Activity</h3>
             <div className="space-y-3">
-              <div className="flex items-center space-x-3 text-sm">
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                <span className="text-gray-600">John Doe submitted a new ticket</span>
-                <span className="text-gray-400">2 minutes ago</span>
-              </div>
-              <div className="flex items-center space-x-3 text-sm">
-                <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                <span className="text-gray-600">Jane Smith requested role upgrade</span>
-                <span className="text-gray-400">5 minutes ago</span>
-              </div>
-              <div className="flex items-center space-x-3 text-sm">
-                <div className="w-2 h-2 bg-yellow-500 rounded-full"></div>
-                <span className="text-gray-600">Ticket #123 status changed to In Progress</span>
-                <span className="text-gray-400">10 minutes ago</span>
-              </div>
+              {recentActivity.length === 0 ? (
+                <p className="text-gray-500 text-sm">No recent activity</p>
+              ) : (
+                recentActivity.map(activity => (
+                  <div key={activity.id} className="flex items-center space-x-3 text-sm">
+                    <div className={`w-2 h-2 rounded-full ${
+                      activity.color === 'green' ? 'bg-green-500' :
+                      activity.color === 'blue' ? 'bg-blue-500' :
+                      'bg-yellow-500'
+                    }`}></div>
+                    <span className="text-gray-600 flex-1">{activity.message}</span>
+                    <span className="text-gray-400">{activity.time}</span>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -296,7 +385,7 @@ const AdminPanel: React.FC = () => {
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-xl font-semibold text-gray-900">Role Upgrade Requests</h2>
             <span className="text-sm text-gray-500">
-              {upgradeRequests.filter(r => r.status === 'pending').length} pending requests
+              {upgradeRequests.filter(r => r.status === 'PENDING').length} pending requests
             </span>
           </div>
 
@@ -320,8 +409,8 @@ const AdminPanel: React.FC = () => {
                       
                       <div>
                         <div className="flex items-center space-x-2">
-                          <h4 className="font-medium text-gray-900">{request.userName}</h4>
-                          <span className="text-gray-500">({request.userEmail})</span>
+                          <h4 className="font-medium text-gray-900">{request.user.name}</h4>
+                          <span className="text-gray-500">({request.user.email})</span>
                         </div>
                         <div className="flex items-center space-x-2 mt-1">
                           <span className="text-sm text-gray-600">Requesting upgrade from</span>
@@ -330,13 +419,13 @@ const AdminPanel: React.FC = () => {
                           {getRoleBadge(request.requestedRole)}
                         </div>
                         <p className="text-sm text-gray-500 mt-1">
-                          Requested {formatDate(request.requestedAt)}
+                          Requested {formatDate(request.createdAt)}
                         </p>
                       </div>
                     </div>
 
                     <div className="flex items-center space-x-2">
-                      {request.status === 'pending' ? (
+                      {request.status === 'PENDING' ? (
                         <>
                           <button
                             onClick={() => handleUpgradeRequest(request.id, 'approve')}
@@ -355,11 +444,11 @@ const AdminPanel: React.FC = () => {
                         </>
                       ) : (
                         <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                          request.status === 'approved' 
+                          request.status === 'APPROVED' 
                             ? 'bg-green-100 text-green-800' 
                             : 'bg-red-100 text-red-800'
                         }`}>
-                          {request.status === 'approved' ? 'Approved' : 'Rejected'}
+                          {request.status === 'APPROVED' ? 'Approved' : 'Rejected'}
                         </span>
                       )}
                     </div>
