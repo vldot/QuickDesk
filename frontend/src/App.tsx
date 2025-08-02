@@ -3,10 +3,10 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import CreateTicket from './pages/CreateTicket';
+import TicketDetail from './pages/TicketDetail';
+import Profile from './pages/Profile';
+import AdminPanel from './pages/AdminPanel';
 // import Register from './pages/Register';
-// import TicketDetail from './pages/TicketDetail';
-// import Profile from './pages/Profile';
-// import AdminPanel from './pages/AdminPanel';
 import Navbar from './components/NavBar';
 import { Toaster } from './components/Toaster';
 
@@ -50,6 +50,24 @@ function AppContent() {
           <Route path="/create-ticket" element={
             <ProtectedRoute>
               <CreateTicket />
+            </ProtectedRoute>
+          } />
+          
+          <Route path="/tickets/:id" element={
+            <ProtectedRoute>
+              <TicketDetail />
+            </ProtectedRoute>
+          } />
+          
+          <Route path="/profile" element={
+            <ProtectedRoute>
+              <Profile />
+            </ProtectedRoute>
+          } />
+          
+          <Route path="/admin" element={
+            <ProtectedRoute>
+              <AdminPanel />
             </ProtectedRoute>
           } />
           
