@@ -197,12 +197,126 @@ app.get('/api/categories', authenticateToken, async (req, res) => {
 app.post('/api/categories', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
   try {
     const { name, description, color } = req.body;
-    const category = await prisma.category.create({
-      data: { name, description, color, createdBy: req.user.id }
+    
+    // Validation
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Category name is required' });
+    }
+    
+    if (name.length < 2 || name.length > 50) {
+      return res.status(400).json({ error: 'Category name must be between 2 and 50 characters' });
+    }
+    
+    if (!color || !/^#[0-9A-F]{6}$/i.test(color)) {
+      return res.status(400).json({ error: 'Please provide a valid hex color' });
+    }
+
+    // Check if category name already exists
+    const existingCategory = await prisma.category.findFirst({
+      where: { name: { equals: name.trim(), mode: 'insensitive' } }
     });
+    
+    if (existingCategory) {
+      return res.status(400).json({ error: 'Category name already exists' });
+    }
+
+    const category = await prisma.category.create({
+      data: { 
+        name: name.trim(), 
+        description: description?.trim() || null, 
+        color: color.toUpperCase(), 
+        createdBy: req.user.id 
+      },
+      include: { _count: { select: { tickets: true } } }
+    });
+    
     res.status(201).json(category);
   } catch (error) {
+    console.error('Create category error:', error);
     res.status(500).json({ error: 'Failed to create category' });
+  }
+});
+
+app.put('/api/categories/:id', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, color } = req.body;
+    
+    // Validation
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Category name is required' });
+    }
+    
+    if (name.length < 2 || name.length > 50) {
+      return res.status(400).json({ error: 'Category name must be between 2 and 50 characters' });
+    }
+    
+    if (!color || !/^#[0-9A-F]{6}$/i.test(color)) {
+      return res.status(400).json({ error: 'Please provide a valid hex color' });
+    }
+
+    // Check if category exists
+    const existingCategory = await prisma.category.findUnique({ where: { id } });
+    if (!existingCategory) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    // Check if new name conflicts with another category
+    const nameConflict = await prisma.category.findFirst({
+      where: { 
+        name: { equals: name.trim(), mode: 'insensitive' },
+        NOT: { id }
+      }
+    });
+    
+    if (nameConflict) {
+      return res.status(400).json({ error: 'Category name already exists' });
+    }
+
+    const updatedCategory = await prisma.category.update({
+      where: { id },
+      data: { 
+        name: name.trim(), 
+        description: description?.trim() || null, 
+        color: color.toUpperCase()
+      },
+      include: { _count: { select: { tickets: true } } }
+    });
+    
+    res.json(updatedCategory);
+  } catch (error) {
+    console.error('Update category error:', error);
+    res.status(500).json({ error: 'Failed to update category' });
+  }
+});
+
+app.delete('/api/categories/:id', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if category exists
+    const category = await prisma.category.findUnique({
+      where: { id },
+      include: { _count: { select: { tickets: true } } }
+    });
+    
+    if (!category) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+    
+    // Check if category has tickets
+    if (category._count.tickets > 0) {
+      return res.status(400).json({ 
+        error: `Cannot delete category with ${category._count.tickets} ticket(s). Please reassign tickets first.` 
+      });
+    }
+    
+    await prisma.category.delete({ where: { id } });
+    
+    res.json({ message: 'Category deleted successfully' });
+  } catch (error) {
+    console.error('Delete category error:', error);
+    res.status(500).json({ error: 'Failed to delete category' });
   }
 });
 
@@ -245,11 +359,30 @@ app.get('/api/tickets', authenticateToken, async (req, res) => {
     });
 
     // Add user vote information to each ticket
-    const ticketsWithUserVote = tickets.map(ticket => ({
+    let ticketsWithUserVote = tickets.map(ticket => ({
       ...ticket,
       userVote: ticket.votesList.length > 0 ? ticket.votesList[0].type : null,
       votesList: undefined // Remove votesList from response
     }));
+
+    // Handle priority sorting manually if needed
+    if (sortBy === 'priority') {
+      const priorityValues = { 'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'URGENT': 4 };
+      ticketsWithUserVote.sort((a, b) => {
+        const aValue = priorityValues[a.priority];
+        const bValue = priorityValues[b.priority];
+        return sortOrder === 'desc' ? bValue - aValue : aValue - bValue;
+      });
+    }
+
+    // Handle comments sorting manually
+    if (sortBy === 'comments') {
+      ticketsWithUserVote.sort((a, b) => {
+        const aComments = a._count.comments;
+        const bComments = b._count.comments;
+        return sortOrder === 'desc' ? bComments - aComments : aComments - bComments;
+      });
+    }
 
     const total = await prisma.ticket.count({ where });
 
@@ -514,6 +647,137 @@ app.get('/api/admin/analytics', authenticateToken, requireRole(['ADMIN']), async
   } catch (error) {
     console.error('Analytics error:', error);
     res.status(500).json({ error: 'Failed to fetch analytics' });
+  }
+});
+
+// ADDITIONAL ANALYTICS ENDPOINTS
+app.get('/api/admin/analytics/status', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const statusCounts = await prisma.ticket.groupBy({
+      by: ['status'],
+      _count: { status: true }
+    });
+
+    const formattedData = statusCounts.map(item => ({
+      status: item.status,
+      count: item._count.status
+    }));
+
+    res.json(formattedData);
+  } catch (error) {
+    console.error('Status analytics error:', error);
+    res.status(500).json({ error: 'Failed to fetch status analytics' });
+  }
+});
+
+app.get('/api/admin/analytics/priority', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const priorityCounts = await prisma.ticket.groupBy({
+      by: ['priority'],
+      _count: { priority: true }
+    });
+
+    const formattedData = priorityCounts.map(item => ({
+      priority: item.priority,
+      count: item._count.priority
+    }));
+
+    res.json(formattedData);
+  } catch (error) {
+    console.error('Priority analytics error:', error);
+    res.status(500).json({ error: 'Failed to fetch priority analytics' });
+  }
+});
+
+app.get('/api/admin/analytics/weekly', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    // Get data for the last 7 days
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const tickets = await prisma.ticket.findMany({
+      where: {
+        createdAt: {
+          gte: sevenDaysAgo
+        }
+      }
+    });
+
+    const comments = await prisma.comment.findMany({
+      where: {
+        createdAt: {
+          gte: sevenDaysAgo
+        }
+      }
+    });
+
+    // Group by day
+    const dailyData = {};
+    for (let i = 6; i >= 0; i--) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split('T')[0];
+      
+      dailyData[dateStr] = {
+        date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        tickets: 0,
+        comments: 0
+      };
+    }
+
+    // Count tickets by day
+    tickets.forEach(ticket => {
+      const dateStr = ticket.createdAt.toISOString().split('T')[0];
+      if (dailyData[dateStr]) {
+        dailyData[dateStr].tickets++;
+      }
+    });
+
+    // Count comments by day
+    comments.forEach(comment => {
+      const dateStr = comment.createdAt.toISOString().split('T')[0];
+      if (dailyData[dateStr]) {
+        dailyData[dateStr].comments++;
+      }
+    });
+
+    const formattedData = Object.values(dailyData);
+    res.json(formattedData);
+  } catch (error) {
+    console.error('Weekly analytics error:', error);
+    res.status(500).json({ error: 'Failed to fetch weekly analytics' });
+  }
+});
+
+app.get('/api/admin/analytics/user-activity', authenticateToken, requireRole(['ADMIN']), async (req, res) => {
+  try {
+    const users = await prisma.user.findMany({
+      include: {
+        _count: {
+          select: {
+            tickets: true,
+            comments: true
+          }
+        }
+      },
+      orderBy: {
+        tickets: {
+          _count: 'desc'
+        }
+      },
+      take: 10
+    });
+
+    const formattedData = users.map(user => ({
+      name: user.name,
+      tickets: user._count.tickets,
+      comments: user._count.comments
+    }));
+
+    res.json(formattedData);
+  } catch (error) {
+    console.error('User activity analytics error:', error);
+    res.status(500).json({ error: 'Failed to fetch user activity analytics' });
   }
 });
 

@@ -13,7 +13,9 @@ import {
   ArrowUp,
   ArrowDown,
   CheckCircle,
-  XCircle
+  XCircle,
+  SortAsc,
+  SortDesc
 } from 'lucide-react';
 
 interface Ticket {
@@ -63,19 +65,37 @@ const Dashboard: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [showOpenOnly, setShowOpenOnly] = useState(true); // Default enabled
+  const [sortBy, setSortBy] = useState('createdAt');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [votingStates, setVotingStates] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     fetchTickets();
     fetchCategories();
-  }, [statusFilter, categoryFilter, searchTerm]);
+  }, [statusFilter, categoryFilter, searchTerm, showOpenOnly, sortBy, sortOrder]);
 
   const fetchTickets = async () => {
     try {
       const params = new URLSearchParams();
-      if (statusFilter) params.append('status', statusFilter);
+      
+      // Apply filters
+      if (statusFilter) {
+        params.append('status', statusFilter);
+      } else if (showOpenOnly) {
+        // When toggle is on and no specific status filter, show open tickets only
+        params.append('status', 'OPEN');
+      }
+      
       if (categoryFilter) params.append('category', categoryFilter);
       if (searchTerm) params.append('search', searchTerm);
+      
+      // Add sorting
+      params.append('sortBy', sortBy);
+      params.append('sortOrder', sortOrder);
+      
+      // Increase limit to show more tickets
+      params.append('limit', '50');
 
       const response = await axios.get(`/tickets?${params.toString()}`);
       setTickets(response.data.tickets);
@@ -96,20 +116,23 @@ const Dashboard: React.FC = () => {
   };
 
   const handleVote = async (ticketId: string, type: 'UP' | 'DOWN', event: React.MouseEvent) => {
-    event.preventDefault(); // Prevent navigation when clicking vote buttons
+    event.preventDefault();
     event.stopPropagation();
 
-    if (votingStates[ticketId]) return; // Prevent double voting
+    if (votingStates[ticketId]) return;
 
     setVotingStates(prev => ({ ...prev, [ticketId]: true }));
 
     try {
       const response = await axios.post(`/tickets/${ticketId}/vote`, { type });
       
-      // Update the ticket in the list with new vote count
       setTickets(prev => prev.map(ticket => 
         ticket.id === ticketId 
-          ? { ...ticket, votes: response.data.votes, userVote: type }
+          ? { 
+              ...ticket, 
+              votes: response.data.votes, 
+              userVote: ticket.userVote === type ? null : type 
+            }
           : ticket
       ));
     } catch (error) {
@@ -124,10 +147,8 @@ const Dashboard: React.FC = () => {
     event.stopPropagation();
 
     try {
-      // This would require a new API endpoint for status updates
       await axios.put(`/tickets/${ticketId}/status`, { status: newStatus });
       
-      // Update the ticket in the list
       setTickets(prev => prev.map(ticket => 
         ticket.id === ticketId 
           ? { ...ticket, status: newStatus }
@@ -135,6 +156,17 @@ const Dashboard: React.FC = () => {
       ));
     } catch (error) {
       console.error('Failed to update status:', error);
+    }
+  };
+
+  const handleSortChange = (newSortBy: string) => {
+    if (sortBy === newSortBy) {
+      // If same sort field, toggle order
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      // If different sort field, set new field with appropriate default order
+      setSortBy(newSortBy);
+      setSortOrder(newSortBy === 'createdAt' ? 'desc' : 'desc');
     }
   };
 
@@ -168,10 +200,25 @@ const Dashboard: React.FC = () => {
   };
 
   const canChangeStatus = (ticket: Ticket) => {
-    // Owner can close their own tickets if there are comments (responses)
     return user?.id === ticket.creator.id && 
            ticket._count.comments > 0 && 
            (ticket.status === 'OPEN' || ticket.status === 'IN_PROGRESS' || ticket.status === 'RESOLVED');
+  };
+
+  const getSortOptions = () => [
+    { value: 'createdAt', label: 'Date Created', icon: Clock },
+    { value: 'updatedAt', label: 'Last Updated', icon: Clock },
+    { value: 'votes', label: 'Most Upvoted', icon: ArrowUp },
+    { value: 'comments', label: 'Most Commented', icon: MessageSquare },
+    { value: 'priority', label: 'Priority', icon: Filter }
+  ];
+
+  // Calculate filtered stats
+  const filteredStats = {
+    open: tickets.filter(t => t.status === 'OPEN').length,
+    inProgress: tickets.filter(t => t.status === 'IN_PROGRESS').length,
+    resolved: tickets.filter(t => t.status === 'RESOLVED').length,
+    total: tickets.length
   };
 
   if (loading) {
@@ -215,9 +262,7 @@ const Dashboard: React.FC = () => {
             </div>
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-600">Open Tickets</p>
-              <p className="text-2xl font-bold text-gray-900">
-                {tickets.filter(t => t.status === 'OPEN').length}
-              </p>
+              <p className="text-2xl font-bold text-gray-900">{filteredStats.open}</p>
             </div>
           </div>
         </div>
@@ -229,9 +274,7 @@ const Dashboard: React.FC = () => {
             </div>
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-600">In Progress</p>
-              <p className="text-2xl font-bold text-gray-900">
-                {tickets.filter(t => t.status === 'IN_PROGRESS').length}
-              </p>
+              <p className="text-2xl font-bold text-gray-900">{filteredStats.inProgress}</p>
             </div>
           </div>
         </div>
@@ -243,9 +286,7 @@ const Dashboard: React.FC = () => {
             </div>
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-600">Resolved</p>
-              <p className="text-2xl font-bold text-gray-900">
-                {tickets.filter(t => t.status === 'RESOLVED').length}
-              </p>
+              <p className="text-2xl font-bold text-gray-900">{filteredStats.resolved}</p>
             </div>
           </div>
         </div>
@@ -256,60 +297,167 @@ const Dashboard: React.FC = () => {
               <Clock className="h-6 w-6 text-gray-600" />
             </div>
             <div className="ml-4">
-              <p className="text-sm font-medium text-gray-600">Total</p>
-              <p className="text-2xl font-bold text-gray-900">{tickets.length}</p>
+              <p className="text-sm font-medium text-gray-600">Total Showing</p>
+              <p className="text-2xl font-bold text-gray-900">{filteredStats.total}</p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Filters */}
+      {/* Filters and Controls */}
       <div className="card mb-6">
-        <div className="flex flex-col sm:flex-row gap-4">
-          {/* Search */}
-          <div className="flex-1">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search tickets..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10 input"
-              />
+        <div className="space-y-4">
+          {/* First Row: Search and Toggle */}
+          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center">
+            {/* Search */}
+            <div className="flex-1">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search tickets..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10 input"
+                />
+              </div>
+            </div>
+
+            {/* Show Open Only Toggle */}
+            <div className="flex items-center space-x-3">
+              <span className="text-sm font-medium text-gray-700">Show Open Only</span>
+              <button
+                onClick={() => setShowOpenOnly(!showOpenOnly)}
+                className={`relative inline-flex items-center h-6 rounded-full w-11 transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${
+                  showOpenOnly ? 'bg-primary-600' : 'bg-gray-300'
+                }`}
+              >
+                <span
+                  className={`inline-block w-4 h-4 transform bg-white rounded-full transition-transform ${
+                    showOpenOnly ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+                />
+              </button>
             </div>
           </div>
 
-          {/* Status Filter */}
-          <div>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="input"
-            >
-              <option value="">All Status</option>
-              <option value="OPEN">Open</option>
-              <option value="IN_PROGRESS">In Progress</option>
-              <option value="RESOLVED">Resolved</option>
-              <option value="CLOSED">Closed</option>
-            </select>
+          {/* Second Row: Filters and Sorting */}
+          <div className="flex flex-col lg:flex-row gap-4">
+            {/* Status Filter */}
+            <div className="flex-1">
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="input"
+                disabled={showOpenOnly}
+              >
+                <option value="">All Status</option>
+                <option value="OPEN">Open</option>
+                <option value="IN_PROGRESS">In Progress</option>
+                <option value="RESOLVED">Resolved</option>
+                <option value="CLOSED">Closed</option>
+              </select>
+            </div>
+
+            {/* Category Filter */}
+            <div className="flex-1">
+              <select
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                className="input"
+              >
+                <option value="">All Categories</option>
+                {categories.map(category => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Sort Options */}
+            <div className="flex-1">
+              <div className="flex items-center space-x-2">
+                <select
+                  value={sortBy}
+                  onChange={(e) => handleSortChange(e.target.value)}
+                  className="input flex-1"
+                >
+                  {getSortOptions().map(option => (
+                    <option key={option.value} value={option.value}>
+                      Sort by {option.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                  className="p-2 text-gray-400 hover:text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+                  title={`Sort ${sortOrder === 'asc' ? 'Descending' : 'Ascending'}`}
+                >
+                  {sortOrder === 'asc' ? (
+                    <SortAsc className="h-4 w-4" />
+                  ) : (
+                    <SortDesc className="h-4 w-4" />
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
 
-          {/* Category Filter */}
-          <div>
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              className="input"
-            >
-              <option value="">All Categories</option>
-              {categories.map(category => (
-                <option key={category.id} value={category.id}>
-                  {category.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* Active Filters Display */}
+          {(showOpenOnly || statusFilter || categoryFilter || searchTerm) && (
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-200">
+              <span className="text-sm text-gray-500">Active filters:</span>
+              
+              {showOpenOnly && !statusFilter && (
+                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                  Open Only
+                  <button
+                    onClick={() => setShowOpenOnly(false)}
+                    className="ml-1 text-blue-600 hover:text-blue-800"
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
+              
+              {statusFilter && (
+                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                  Status: {statusFilter.replace('_', ' ')}
+                  <button
+                    onClick={() => setStatusFilter('')}
+                    className="ml-1 text-gray-600 hover:text-gray-800"
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
+              
+              {categoryFilter && (
+                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+                  Category: {categories.find(c => c.id === categoryFilter)?.name}
+                  <button
+                    onClick={() => setCategoryFilter('')}
+                    className="ml-1 text-purple-600 hover:text-purple-800"
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
+              
+              {searchTerm && (
+                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                  Search: "{searchTerm}"
+                  <button
+                    onClick={() => setSearchTerm('')}
+                    className="ml-1 text-green-600 hover:text-green-800"
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -319,9 +467,11 @@ const Dashboard: React.FC = () => {
           {tickets.length === 0 ? (
             <div className="text-center py-12">
               <MessageSquare className="mx-auto h-12 w-12 text-gray-400" />
-              <h3 className="mt-2 text-sm font-medium text-gray-900">No tickets</h3>
+              <h3 className="mt-2 text-sm font-medium text-gray-900">No tickets found</h3>
               <p className="mt-1 text-sm text-gray-500">
-                Get started by creating a new ticket.
+                {showOpenOnly && !searchTerm && !statusFilter && !categoryFilter
+                  ? "No open tickets to display. Try toggling off 'Show Open Only' to see all tickets."
+                  : "Try adjusting your filters or search terms."}
               </p>
             </div>
           ) : (
